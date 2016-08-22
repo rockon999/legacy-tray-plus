@@ -1,3 +1,5 @@
+/* exported init, enable, disable, _onKeyPressEvent, _onKeyReleaseEvent */
+
 /*
  * Copyright (C) 2015 Jonny Lamb <jonnylamb@jonnylamb.com>
  *
@@ -15,89 +17,172 @@
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
-
-const Main = imports.ui.main;
-const Meta = imports.gi.Meta;
 const Lang = imports.lang;
 
+const Clutter = imports.gi.Clutter;
 const Shell = imports.gi.Shell;
+const Meta = imports.gi.Meta;
+const St = imports.gi.St;
+
+const Tweener = imports.ui.tweener;
+const Main = imports.ui.main;
 
 // Import the convenience.js (Used for loading settings schemas)
-const Self = imports.misc.extensionUtils.getCurrentExtension();
-const Convenience = Self.imports.convenience;
+const Me = imports.misc.extensionUtils.getCurrentExtension();
+const Convenience = Me.imports.convenience;
 
 // Import config
-const config = Self.imports.config;
-
-let notify_id = 0;
-let visible = true;
+const config = Me.imports.config;
 
 function init() {
+    this.visible = true;
+
     this.settings = Convenience.getSettings();
     // Catch use shortcut toggle config change
-    this.settings.connect('changed::' +
-        config.SETTINGS_USE_TOGGLE_SHORTCUT, Lang.bind(this, refreshBindings));
+    this.settings.connect('changed::' + config.SETTINGS_USE_TOGGLE_SHORTCUT, Lang.bind(this, refresh_keybindings));
 }
 
 function enable() {
-    if (settings.get_boolean(config.SETTINGS_USE_TOGGLE_SHORTCUT))
-        addKeybindings(config.SETTINGS_TOGGLE_SHORTCUT, toggleTray);
-    hideTray();
+    if (this.settings.get_boolean(config.SETTINGS_USE_TOGGLE_SHORTCUT)) {
+        add_keybindings(config.SETTINGS_TOGGLE_SHORTCUT, toggle_tray);
+    }
+
+    /* Remove current barrier. */
+    Main.legacyTray._unsetBarrier();
+
+    /* Disable barriers; we won't need them. */
+    Main.legacyTray._horizontalBarrier = null;
+    Main.legacyTray._syncBarrier = function () { };
+
+    /* Add custom borders. */
+    Main.legacyTray._box.add_style_class_name('middle-legacy-tray');
+    Main.legacyTray._iconBox.add_style_class_name('middle-legacy-tray-icon-box');
+
+    /* Remove hide/show controls from the tray. */
+    Main.legacyTray._box.remove_child(Main.legacyTray._concealHandle);
+    Main.legacyTray._box.remove_child(Main.legacyTray._revealHandle);
+
+    /* Create a close button. Mimic Main.legacyTray._revealHandle. */
+    let close_button = new St.Button({ style_class: 'legacy-tray-handle' });
+    close_button.child = new St.Icon({ icon_name: 'close-symbolic' });
+    close_button.child.add_style_class_name('close-button');
+    close_button.connect('clicked', Lang.bind(this, hide_tray));
+
+    /* Remove the slider. */
+    Main.layoutManager.untrackChrome(Main.legacyTray._slider);
+    Main.legacyTray._slider.remove_actor(Main.legacyTray._box);
+    Main.legacyTray.actor.remove_actor(Main.legacyTray._slider);
+
+    /* Reorder the box so that close_button is first. */
+    Main.legacyTray._box.remove_child(Main.legacyTray._iconBox);
+    Main.legacyTray._box.add_child(close_button);
+    Main.legacyTray._box.add_child(Main.legacyTray._iconBox);
+
+    /* Replace the slider with the box. */
+    Main.legacyTray.actor.add_actor(Main.legacyTray._box);
+
+    // TODO: necessary?
+    Main.layoutManager.trackChrome(Main.legacyTray._box, { affectsInputRegion: true });
+
+    /* Set alignments to the center of the screen. */
+    Main.legacyTray.actor.set_x_align(Clutter.ActorAlign.CENTER);
+    Main.legacyTray.actor.set_y_align(Clutter.ActorAlign.CENTER);
+
+    /* Setup keyboard events. */
+    Main.legacyTray._box.connect('key-press-event', Lang.bind(this, this._onKeyPressEvent));
+    Main.legacyTray._box.connect('key-release-event', Lang.bind(this, this._onKeyReleaseEvent));
+    Main.legacyTray._box.can_focus = true;
+
+    hide_tray();
 }
 
 function disable() {
-    removeKeybindings(config.SETTINGS_TOGGLE_SHORTCUT);
-    showTray();
+    remove_keybindings(config.SETTINGS_TOGGLE_SHORTCUT);
+    show_tray();
 }
 
-function showTray() {
-    visible = true;
-    if (notify_id > 0)
-        Main.legacyTray.actor.disconnect(notify_id);
-    notify_id = 0;
+function show_tray() {
+    this.visible = true;
 
     Main.legacyTray.actor.show();
-}
 
-function hideTray() {
-    visible = false;
-    Main.legacyTray.actor.hide();
+    // Get focus so 'Escape' can close.
+    Main.legacyTray._box.grab_key_focus();
 
-    notify_id = Main.legacyTray.actor.connect("notify::visible", function() {
-        if (Main.legacyTray.actor.visible)
-            Main.legacyTray.actor.hide();
+    Tweener.addTween(Main.legacyTray.actor, {
+        opacity: 255,
+        time: 1,
+        transition: 'easeOutQuad',
+        onComplete: Lang.bind(this, function () {
+        })
     });
 }
 
-function toggleTray() {
-    if (visible)
-        hideTray();
-    else
-        showTray();
+function hide_tray() {
+    this.visible = false;
+
+    Tweener.addTween(Main.legacyTray.actor, {
+        opacity: 0,
+        time: 0.5,
+        transition: 'easeOutQuad',
+        onComplete: Lang.bind(this, function () {
+            Main.legacyTray.actor.hide();
+        })
+    });
 }
 
-function addKeybindings(name, handler) {
-    if (Main.wm.addKeybinding) {
-        var ModeType = Shell.hasOwnProperty('ActionMode') ?
-            Shell.ActionMode : Shell.KeyBindingMode;
-        Main.wm.addKeybinding(name, this.settings, Meta.KeyBindingFlags.NONE,
-             ModeType.NORMAL | ModeType.OVERVIEW, handler);
+function toggle_tray() {
+    if (this.visible) {
+        hide_tray();
     } else {
-        global.display.add_keybinding(name, this.settings,
-             Meta.KeyBindingFlags.NONE, handler);
+        show_tray();
     }
 }
 
-function removeKeybindings(name) {
+function add_keybindings(name, handler) {
+    if (Main.wm.addKeybinding) {
+        let ModeType = Shell.hasOwnProperty('ActionMode') ? Shell.ActionMode : Shell.KeyBindingMode;
+        Main.wm.addKeybinding(name, this.settings, Meta.KeyBindingFlags.NONE, ModeType.NORMAL | ModeType.OVERVIEW, handler);
+    } else {
+        global.display.add_keybinding(name, this.settings, Meta.KeyBindingFlags.NONE, handler);
+    }
+}
+
+function remove_keybindings(name) {
     if (Main.wm.removeKeybinding) {
         Main.wm.removeKeybinding(name);
-    }
-    else {
+    } else {
         global.display.remove_keybinding(name);
     }
 }
 
-function refreshBindings() {
-    disable();
-    enable();
+function refresh_keybindings() {
+    remove_keybindings(config.SETTINGS_TOGGLE_SHORTCUT);
+
+    if (this.settings.get_boolean(config.SETTINGS_USE_TOGGLE_SHORTCUT)) {
+        add_keybindings(config.SETTINGS_TOGGLE_SHORTCUT, toggle_tray);
+    }
+}
+
+function _onKeyPressEvent(obj, event) {
+    this._pressed_key = event.get_key_symbol();
+    return Clutter.EVENT_PROPAGATE;
+}
+
+function _onKeyReleaseEvent(obj, event) {
+    let pressed_key = this._pressed_key;
+    this._pressed_key = null;
+
+    let key = event.get_key_symbol();
+
+    if (key !== pressed_key) {
+        return Clutter.EVENT_PROPAGATE;
+    }
+
+    if (key === Clutter.Escape) {
+        toggle_tray();
+        return Clutter.EVENT_STOP;
+    }
+
+    return Clutter.EVENT_PROPAGATE;
 }

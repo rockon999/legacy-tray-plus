@@ -1,0 +1,11 @@
+.middle-legacy-tray {
+    border-radius: 4px;
+}
+
+.middle-legacy-tray-icon-box {
+    padding: 10px;
+}
+
+.close-button {
+    icon-size: 16px;
+}
